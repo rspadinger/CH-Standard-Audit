@@ -1,0 +1,12 @@
+{
+  "__solc_remaps": ["@=./node_modules/@", "hardhat=./node_modules/hardhat"],
+  "solc_remaps": ["@=./node_modules/@", "hardhat=./node_modules/hardhat"],
+  "exclude_informational": false,
+  "exclude_low": false,
+  "exclude_medium": false,
+  "exclude_high": false,
+  "disable_color": false,
+  "filter_paths": "(lib/|script/|test/)",
+  "___json": "SLITHER-RESULTS.json",
+  "___printers_to_run": "contract-summary,inheritance-graph,function-summary"
+}

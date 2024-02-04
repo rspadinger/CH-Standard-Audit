@@ -1,0 +1,433 @@
+TESTS:
+======
+
+  LiquidationPool
+    position
+      ? provides the position data for given user (43ms)
+      ? does not include unclaimed EUROs fees for non-holders (47ms)
+    increase position
+      ? allows increasing position by one or both assets (393ms)
+      ? triggers a distribution of fees before increasing position (571ms)
+    decrease position
+      ? allows decreasing position by one or both assets (309ms)
+      ? triggers a distribution of fees before decreasing position (221ms)
+      ? does not allow decreasing beyond position value, even with assets in pool (170ms)
+    claim rewards
+      ? allows users to claim their accrued rewards (406ms)
+
+  LiquidationPoolManager
+    distributeFees
+      ? distributes % of accrued EUROs fees to the pool stakers (1156ms)
+    runLiquidation
+      ? runs liquidations, and reverts if nothing to liquidate (43ms)
+      ? distributes liquidated assets among stake holders if there is enough EUROs to purchase (470ms)
+      ? forwards fees and rewards to protocol if there is no tst staked in pool (257ms)
+      ? distributes fees before running liquidation (237ms)
+      ? returns unpurchased liquidated assets to protocol address (507ms)
+      ? increases existing rewards with multiple liquidations (494ms)
+
+  SmartVault
+    ownership
+      ? will not allow setting of new owner if not manager
+    adding collateral
+      ? accepts native currency as collateral (95ms)
+      ? accepts certain 6 decimal ERC20s as collateral (270ms)
+      ? accepts certain 18 decimal ERC20s as collateral (251ms)
+    removing collateral
+      ? allows removal of native currency if owner and it will not undercollateralise vault (353ms)
+      ? allows removal of ERC20 if owner and it will not undercollateralise vault (739ms)
+      ? allows removal of ERC20s that are or are not valid collateral, if not undercollateralising (803ms)
+    minting
+      ? only allows the vault owner to mint from smart vault directly (210ms)
+    burning
+      ? allows burning of EUROs if there is a minted amount, charges a fee (249ms)
+    liquidation
+      ? indicates whether vault is undercollateralised in current state (229ms)
+      ? allows manager to liquidate vault, if undercollateralised (324ms)
+      ? will not allow minting of EUROs if liquidated (309ms)
+    swaps
+      ? only allows owner to perform swap
+      ? invokes swaprouter with value for eth swap, paying fees to protocol (265ms)
+      ? amount out minimum is 0 if over collateral still (237ms)
+      ? invokes swaprouter after creating approval for erc20, paying fees to protocol, converting all weth back to eth (188ms)
+
+  SmartVaultManager
+    setting admin data
+      ? allows owner to admin data (420ms)
+    opening
+    open vault
+      liquidation
+        ? liquidates all undercollateralised vaults (1291ms)
+      transfer
+        ? should update all the ownership data properly (661ms)
+      nft metadata
+        ? produces dynamic nft metadata (1025ms)
+
+
+SLITHER:
+========
+
+INFO:Detectors:
+LiquidationPool.returnUnpurchasedNative(ILiquidationPoolManager.Asset[],uint256) (contracts/LiquidationPool.sol#196-203) sends eth to arbitrary user
+        Dangerous calls:
+        - (_sent) = manager.call{value: _assets[i].amount - _nativePurchased}() (contracts/LiquidationPool.sol#199)
+LiquidationPoolManager.forwardRemainingRewards(ITokenManager.Token[]) (contracts/LiquidationPoolManager.sol#43-57) sends eth to arbitrary user
+        Dangerous calls:
+        - (_sent) = protocol.call{value: balance}() (contracts/LiquidationPoolManager.sol#49)
+LiquidationPoolManager.runLiquidation(uint256) (contracts/LiquidationPoolManager.sol#59-82) sends eth to arbitrary user
+        Dangerous calls:
+        - LiquidationPool(pool).distributeAssets{value: ethBalance}(assets,manager.collateralRate(),manager.HUNDRED_PC()) (contracts/LiquidationPoolManager.sol#80)
+SmartVaultV3.liquidateNative() (contracts/SmartVaultV3.sol#103-108) sends eth to arbitrary user
+        Dangerous calls:
+        - (sent) = address(ISmartVaultManagerV3(manager).protocol()).call{value: address(this).balance}() (contracts/SmartVaultV3.sol#105)
+SmartVaultV3.executeNativeSwapAndFee(ISwapRouter.ExactInputSingleParams,uint256) (contracts/SmartVaultV3.sol#190-194) sends eth to arbitrary user
+        Dangerous calls:
+        - (sent) = address(ISmartVaultManagerV3(manager).protocol()).call{value: _swapFee}() (contracts/SmartVaultV3.sol#191)
+        - ISwapRouter(ISmartVaultManagerV3(manager).swapRouter2()).exactInputSingle{value: _params.amountIn}(_params) (contracts/SmartVaultV3.sol#193)
+MockSmartVaultManager.liquidateVault(uint256) (contracts/utils/MockSmartVaultManager.sol#23-41) sends eth to arbitrary user
+        Dangerous calls:
+        - (_sent) = address(msg.sender).call{value: address(this).balance}() (contracts/utils/MockSmartVaultManager.sol#29)
+Reference: https://github.com/crytic/slither/wiki/Detector-Documentation#functions-that-send-ether-to-arbitrary-destinations
+
+INFO:Detectors:
+Reentrancy in LiquidationPool.claimRewards() (contracts/LiquidationPool.sol#164-180):
+        External calls:
+        - (_sent) = address(msg.sender).call{value: _rewardAmount}() (contracts/LiquidationPool.sol#172)
+        - IERC20(_token.addr).transfer(msg.sender,_rewardAmount) (contracts/LiquidationPool.sol#175)
+        External calls sending eth:
+        - (_sent) = address(msg.sender).call{value: _rewardAmount}() (contracts/LiquidationPool.sol#172)
+        State variables written after the call(s):
+        - delete rewards[abi.encodePacked(msg.sender,_token.symbol)] (contracts/LiquidationPool.sol#170)
+        LiquidationPool.rewards (contracts/LiquidationPool.sol#22) can be used in cross function reentrancies:
+        - LiquidationPool.claimRewards() (contracts/LiquidationPool.sol#164-180)
+        - LiquidationPool.distributeAssets(ILiquidationPoolManager.Asset[],uint256,uint256) (contracts/LiquidationPool.sol#205-241)
+        - LiquidationPool.findRewards(address) (contracts/LiquidationPool.sol#64-71)
+Reference: https://github.com/crytic/slither/wiki/Detector-Documentation#reentrancy-vulnerabilities
+
+INFO:Detectors:
+LiquidationPool.claimRewards() (contracts/LiquidationPool.sol#164-180) ignores return value by IERC20(_token.addr).transfer(msg.sender,_rewardAmount) (contracts/LiquidationPool.sol#175)
+LiquidationPoolManager.distributeFees() (contracts/LiquidationPoolManager.sol#33-41) ignores return value by eurosToken.transfer(protocol,eurosToken.balanceOf(address(this))) (contracts/LiquidationPoolManager.sol#40)
+LiquidationPoolManager.forwardRemainingRewards(ITokenManager.Token[]) (contracts/LiquidationPoolManager.sol#43-57) ignores return value by IERC20(_token.addr).transfer(protocol,balance_scope_0) (contracts/LiquidationPoolManager.sol#54)
+MockSmartVaultManager.liquidateVault(uint256) (contracts/utils/MockSmartVaultManager.sol#23-41) ignores return value by ierc20.transfer(msg.sender,ierc20.balanceOf(address(this))) (contracts/utils/MockSmartVaultManager.sol#35)
+Reference: https://github.com/crytic/slither/wiki/Detector-Documentation#unchecked-transfer
+
+INFO:Detectors:
+SmartVaultManagerV5.euros (contracts/SmartVaultManagerV5.sol#23) is never initialized. It is used in:
+        - SmartVaultManagerV5.mint() (contracts/SmartVaultManagerV5.sol#70-79)
+        - SmartVaultManagerV5.liquidateVault(uint256) (contracts/SmartVaultManagerV5.sol#81-92)
+SmartVaultManagerV5.collateralRate (contracts/SmartVaultManagerV5.sol#24) is never initialized. It is used in:
+        - SmartVaultManagerV5.vaults() (contracts/SmartVaultManagerV5.sol#53-68)
+SmartVaultManagerV5.smartVaultIndex (contracts/SmartVaultManagerV5.sol#27) is never initialized. It is used in:
+        - SmartVaultManagerV5.vaults() (contracts/SmartVaultManagerV5.sol#53-68)
+        - SmartVaultManagerV5.mint() (contracts/SmartVaultManagerV5.sol#70-79)
+        - SmartVaultManagerV5.liquidateVault(uint256) (contracts/SmartVaultManagerV5.sol#81-92)
+        - SmartVaultManagerV5.tokenURI(uint256) (contracts/SmartVaultManagerV5.sol#94-97)
+        - SmartVaultManagerV5._afterTokenTransfer(address,address,uint256,uint256) (contracts/SmartVaultManagerV5.sol#139-143)
+Reference: https://github.com/crytic/slither/wiki/Detector-Documentation#uninitialized-state-variables
+
+
+*************************************************************************************************
+
+
+INFO:Detectors:
+MathUpgradeable.mulDiv(uint256,uint256,uint256) (node_modules/@openzeppelin/contracts-upgradeable/utils/math/MathUpgradeable.sol#55-134) performs a multiplication on the result of a division:
+        - denominator = denominator / twos (node_modules/@openzeppelin/contracts-upgradeable/utils/math/MathUpgradeable.sol#101)
+        - inverse = (3 * denominator) ^ 2 (node_modules/@openzeppelin/contracts-upgradeable/utils/math/MathUpgradeable.sol#116)
+MathUpgradeable.mulDiv(uint256,uint256,uint256) (node_modules/@openzeppelin/contracts-upgradeable/utils/math/MathUpgradeable.sol#55-134) performs a multiplication on the result of a division:
+        - denominator = denominator / twos (node_modules/@openzeppelin/contracts-upgradeable/utils/math/MathUpgradeable.sol#101)
+        - inverse *= 2 - denominator * inverse (node_modules/@openzeppelin/contracts-upgradeable/utils/math/MathUpgradeable.sol#120)
+MathUpgradeable.mulDiv(uint256,uint256,uint256) (node_modules/@openzeppelin/contracts-upgradeable/utils/math/MathUpgradeable.sol#55-134) performs a multiplication on the result of a division:
+        - denominator = denominator / twos (node_modules/@openzeppelin/contracts-upgradeable/utils/math/MathUpgradeable.sol#101)
+        - inverse *= 2 - denominator * inverse (node_modules/@openzeppelin/contracts-upgradeable/utils/math/MathUpgradeable.sol#121)
+MathUpgradeable.mulDiv(uint256,uint256,uint256) (node_modules/@openzeppelin/contracts-upgradeable/utils/math/MathUpgradeable.sol#55-134) performs a multiplication on the result of a division:
+        - denominator = denominator / twos (node_modules/@openzeppelin/contracts-upgradeable/utils/math/MathUpgradeable.sol#101)
+        - inverse *= 2 - denominator * inverse (node_modules/@openzeppelin/contracts-upgradeable/utils/math/MathUpgradeable.sol#122)
+MathUpgradeable.mulDiv(uint256,uint256,uint256) (node_modules/@openzeppelin/contracts-upgradeable/utils/math/MathUpgradeable.sol#55-134) performs a multiplication on the result of a division:
+        - denominator = denominator / twos (node_modules/@openzeppelin/contracts-upgradeable/utils/math/MathUpgradeable.sol#101)
+        - inverse *= 2 - denominator * inverse (node_modules/@openzeppelin/contracts-upgradeable/utils/math/MathUpgradeable.sol#123)
+MathUpgradeable.mulDiv(uint256,uint256,uint256) (node_modules/@openzeppelin/contracts-upgradeable/utils/math/MathUpgradeable.sol#55-134) performs a multiplication on the result of a division:
+        - denominator = denominator / twos (node_modules/@openzeppelin/contracts-upgradeable/utils/math/MathUpgradeable.sol#101)
+        - inverse *= 2 - denominator * inverse (node_modules/@openzeppelin/contracts-upgradeable/utils/math/MathUpgradeable.sol#124)
+MathUpgradeable.mulDiv(uint256,uint256,uint256) (node_modules/@openzeppelin/contracts-upgradeable/utils/math/MathUpgradeable.sol#55-134) performs a multiplication on the result of a division:
+        - denominator = denominator / twos (node_modules/@openzeppelin/contracts-upgradeable/utils/math/MathUpgradeable.sol#101)
+        - inverse *= 2 - denominator * inverse (node_modules/@openzeppelin/contracts-upgradeable/utils/math/MathUpgradeable.sol#125)
+MathUpgradeable.mulDiv(uint256,uint256,uint256) (node_modules/@openzeppelin/contracts-upgradeable/utils/math/MathUpgradeable.sol#55-134) performs a multiplication on the result of a division:
+        - prod0 = prod0 / twos (node_modules/@openzeppelin/contracts-upgradeable/utils/math/MathUpgradeable.sol#104)
+        - result = prod0 * inverse (node_modules/@openzeppelin/contracts-upgradeable/utils/math/MathUpgradeable.sol#131)
+Base64.encode(bytes) (node_modules/@openzeppelin/contracts/utils/Base64.sol#20-91) performs a multiplication on the result of a division:
+        - result = new string(4 * ((data.length + 2) / 3)) (node_modules/@openzeppelin/contracts/utils/Base64.sol#36)
+Math.mulDiv(uint256,uint256,uint256) (node_modules/@openzeppelin/contracts/utils/math/Math.sol#55-134) performs a multiplication on the result of a division:
+        - denominator = denominator / twos (node_modules/@openzeppelin/contracts/utils/math/Math.sol#101)
+        - inverse = (3 * denominator) ^ 2 (node_modules/@openzeppelin/contracts/utils/math/Math.sol#116)
+Math.mulDiv(uint256,uint256,uint256) (node_modules/@openzeppelin/contracts/utils/math/Math.sol#55-134) performs a multiplication on the result of a division:
+        - denominator = denominator / twos (node_modules/@openzeppelin/contracts/utils/math/Math.sol#101)
+        - inverse *= 2 - denominator * inverse (node_modules/@openzeppelin/contracts/utils/math/Math.sol#120)
+Math.mulDiv(uint256,uint256,uint256) (node_modules/@openzeppelin/contracts/utils/math/Math.sol#55-134) performs a multiplication on the result of a division:
+        - denominator = denominator / twos (node_modules/@openzeppelin/contracts/utils/math/Math.sol#101)
+        - inverse *= 2 - denominator * inverse (node_modules/@openzeppelin/contracts/utils/math/Math.sol#121)
+Math.mulDiv(uint256,uint256,uint256) (node_modules/@openzeppelin/contracts/utils/math/Math.sol#55-134) performs a multiplication on the result of a division:
+        - denominator = denominator / twos (node_modules/@openzeppelin/contracts/utils/math/Math.sol#101)
+        - inverse *= 2 - denominator * inverse (node_modules/@openzeppelin/contracts/utils/math/Math.sol#122)
+Math.mulDiv(uint256,uint256,uint256) (node_modules/@openzeppelin/contracts/utils/math/Math.sol#55-134) performs a multiplication on the result of a division:
+        - denominator = denominator / twos (node_modules/@openzeppelin/contracts/utils/math/Math.sol#101)
+        - inverse *= 2 - denominator * inverse (node_modules/@openzeppelin/contracts/utils/math/Math.sol#123)
+Math.mulDiv(uint256,uint256,uint256) (node_modules/@openzeppelin/contracts/utils/math/Math.sol#55-134) performs a multiplication on the result of a division:
+        - denominator = denominator / twos (node_modules/@openzeppelin/contracts/utils/math/Math.sol#101)
+        - inverse *= 2 - denominator * inverse (node_modules/@openzeppelin/contracts/utils/math/Math.sol#124)
+Math.mulDiv(uint256,uint256,uint256) (node_modules/@openzeppelin/contracts/utils/math/Math.sol#55-134) performs a multiplication on the result of a division:
+        - denominator = denominator / twos (node_modules/@openzeppelin/contracts/utils/math/Math.sol#101)
+        - inverse *= 2 - denominator * inverse (node_modules/@openzeppelin/contracts/utils/math/Math.sol#125)
+Math.mulDiv(uint256,uint256,uint256) (node_modules/@openzeppelin/contracts/utils/math/Math.sol#55-134) performs a multiplication on the result of a division:
+        - prod0 = prod0 / twos (node_modules/@openzeppelin/contracts/utils/math/Math.sol#104)
+        - result = prod0 * inverse (node_modules/@openzeppelin/contracts/utils/math/Math.sol#131)
+LiquidationPool.distributeAssets(ILiquidationPoolManager.Asset[],uint256,uint256) (contracts/LiquidationPool.sol#205-241) performs a multiplication on the result of a division:
+        - costInEuros = _portion * 10 ** (18 - asset.token.dec) * uint256(assetPriceUsd) / uint256(priceEurUsd) * _hundredPC / _collateralRate (contracts/LiquidationPool.sol#220-221)
+LiquidationPool.distributeAssets(ILiquidationPoolManager.Asset[],uint256,uint256) (contracts/LiquidationPool.sol#205-241) performs a multiplication on the result of a division:
+        - _portion = asset.amount * _positionStake / stakeTotal (contracts/LiquidationPool.sol#219)
+        - _portion = _portion * _position.EUROs / costInEuros (contracts/LiquidationPool.sol#223)
+Reference: https://github.com/crytic/slither/wiki/Detector-Documentation#divide-before-multiply
+
+INFO:Detectors:
+Contract locking ether found:
+        Contract SwapRouterMock (contracts/utils/SwapRouterMock.sol#6-41) has payable functions:
+         - ISwapRouter.exactInputSingle(ISwapRouter.ExactInputSingleParams) (contracts/interfaces/ISwapRouter.sol#16)
+         - SwapRouterMock.exactInputSingle(ISwapRouter.ExactInputSingleParams) (contracts/utils/SwapRouterMock.sol#22-32)
+        But does not have a function to withdraw the ether
+Reference: https://github.com/crytic/slither/wiki/Detector-Documentation#contracts-that-lock-ether
+
+INFO:Detectors:
+Reentrancy in LiquidationPool.decreasePosition(uint256,uint256) (contracts/LiquidationPool.sol#149-162):
+        External calls:
+        - ILiquidationPoolManager(manager).distributeFees() (contracts/LiquidationPool.sol#151)
+        - IERC20(TST).safeTransfer(msg.sender,_tstVal) (contracts/LiquidationPool.sol#154)
+        State variables written after the call(s):
+        - positions[msg.sender].TST -= _tstVal (contracts/LiquidationPool.sol#155)
+        LiquidationPool.positions (contracts/LiquidationPool.sol#21) can be used in cross function reentrancies:
+        - LiquidationPool.consolidatePendingStakes() (contracts/LiquidationPool.sol#119-132)
+        - LiquidationPool.decreasePosition(uint256,uint256) (contracts/LiquidationPool.sol#149-162)
+        - LiquidationPool.deletePosition(LiquidationPool.Position) (contracts/LiquidationPool.sol#144-147)
+        - LiquidationPool.distributeAssets(ILiquidationPoolManager.Asset[],uint256,uint256) (contracts/LiquidationPool.sol#205-241)
+        - LiquidationPool.distributeFees(uint256) (contracts/LiquidationPool.sol#182-194)
+        - LiquidationPool.getStakeTotal() (contracts/LiquidationPool.sol#48-53)
+        - LiquidationPool.getTstTotal() (contracts/LiquidationPool.sol#55-62)
+        - LiquidationPool.position(address) (contracts/LiquidationPool.sol#83-90)
+Reentrancy in LiquidationPool.decreasePosition(uint256,uint256) (contracts/LiquidationPool.sol#149-162):
+        External calls:
+        - ILiquidationPoolManager(manager).distributeFees() (contracts/LiquidationPool.sol#151)
+        - IERC20(TST).safeTransfer(msg.sender,_tstVal) (contracts/LiquidationPool.sol#154)
+        - IERC20(EUROs).safeTransfer(msg.sender,_eurosVal) (contracts/LiquidationPool.sol#158)
+        State variables written after the call(s):
+        - positions[msg.sender].EUROs -= _eurosVal (contracts/LiquidationPool.sol#159)
+        LiquidationPool.positions (contracts/LiquidationPool.sol#21) can be used in cross function reentrancies:
+        - LiquidationPool.consolidatePendingStakes() (contracts/LiquidationPool.sol#119-132)
+        - LiquidationPool.decreasePosition(uint256,uint256) (contracts/LiquidationPool.sol#149-162)
+        - LiquidationPool.deletePosition(LiquidationPool.Position) (contracts/LiquidationPool.sol#144-147)
+        - LiquidationPool.distributeAssets(ILiquidationPoolManager.Asset[],uint256,uint256) (contracts/LiquidationPool.sol#205-241)
+        - LiquidationPool.distributeFees(uint256) (contracts/LiquidationPool.sol#182-194)
+        - LiquidationPool.getStakeTotal() (contracts/LiquidationPool.sol#48-53)
+        - LiquidationPool.getTstTotal() (contracts/LiquidationPool.sol#55-62)
+        - LiquidationPool.position(address) (contracts/LiquidationPool.sol#83-90)
+        - deletePosition(positions[msg.sender]) (contracts/LiquidationPool.sol#161)
+                - delete positions[_position.holder] (contracts/LiquidationPool.sol#146)
+        LiquidationPool.positions (contracts/LiquidationPool.sol#21) can be used in cross function reentrancies:
+        - LiquidationPool.consolidatePendingStakes() (contracts/LiquidationPool.sol#119-132)
+        - LiquidationPool.decreasePosition(uint256,uint256) (contracts/LiquidationPool.sol#149-162)
+        - LiquidationPool.deletePosition(LiquidationPool.Position) (contracts/LiquidationPool.sol#144-147)
+        - LiquidationPool.distributeAssets(ILiquidationPoolManager.Asset[],uint256,uint256) (contracts/LiquidationPool.sol#205-241)
+        - LiquidationPool.distributeFees(uint256) (contracts/LiquidationPool.sol#182-194)
+        - LiquidationPool.getStakeTotal() (contracts/LiquidationPool.sol#48-53)
+        - LiquidationPool.getTstTotal() (contracts/LiquidationPool.sol#55-62)
+        - LiquidationPool.position(address) (contracts/LiquidationPool.sol#83-90)
+Reentrancy in LiquidationPool.distributeAssets(ILiquidationPoolManager.Asset[],uint256,uint256) (contracts/LiquidationPool.sol#205-241):
+        External calls:
+        - IERC20(asset.token.addr).safeTransferFrom(manager,address(this),_portion) (contracts/LiquidationPool.sol#232)
+        State variables written after the call(s):
+        - positions[holders[j]] = _position (contracts/LiquidationPool.sol#237)
+        LiquidationPool.positions (contracts/LiquidationPool.sol#21) can be used in cross function reentrancies:
+        - LiquidationPool.consolidatePendingStakes() (contracts/LiquidationPool.sol#119-132)
+        - LiquidationPool.decreasePosition(uint256,uint256) (contracts/LiquidationPool.sol#149-162)
+        - LiquidationPool.deletePosition(LiquidationPool.Position) (contracts/LiquidationPool.sol#144-147)
+        - LiquidationPool.distributeAssets(ILiquidationPoolManager.Asset[],uint256,uint256) (contracts/LiquidationPool.sol#205-241)
+        - LiquidationPool.distributeFees(uint256) (contracts/LiquidationPool.sol#182-194)
+        - LiquidationPool.getStakeTotal() (contracts/LiquidationPool.sol#48-53)
+        - LiquidationPool.getTstTotal() (contracts/LiquidationPool.sol#55-62)
+        - LiquidationPool.position(address) (contracts/LiquidationPool.sol#83-90)
+        - rewards[abi.encodePacked(_position.holder,asset.token.symbol)] += _portion (contracts/LiquidationPool.sol#227)
+        LiquidationPool.rewards (contracts/LiquidationPool.sol#22) can be used in cross function reentrancies:
+        - LiquidationPool.claimRewards() (contracts/LiquidationPool.sol#164-180)
+        - LiquidationPool.distributeAssets(ILiquidationPoolManager.Asset[],uint256,uint256) (contracts/LiquidationPool.sol#205-241)
+        - LiquidationPool.findRewards(address) (contracts/LiquidationPool.sol#64-71)
+Reentrancy in LiquidationPool.distributeFees(uint256) (contracts/LiquidationPool.sol#182-194):
+        External calls:
+        - IERC20(EUROs).safeTransferFrom(msg.sender,address(this),_amount) (contracts/LiquidationPool.sol#185)
+        State variables written after the call(s):
+        - pendingStakes[i_scope_0].EUROs += _amount * pendingStakes[i_scope_0].TST / tstTotal (contracts/LiquidationPool.sol#191)
+        LiquidationPool.pendingStakes (contracts/LiquidationPool.sol#23) can be used in cross function reentrancies:
+        - LiquidationPool.consolidatePendingStakes() (contracts/LiquidationPool.sol#119-132)
+        - LiquidationPool.deletePendingStake(uint256) (contracts/LiquidationPool.sol#105-110)
+        - LiquidationPool.distributeFees(uint256) (contracts/LiquidationPool.sol#182-194)
+        - LiquidationPool.getTstTotal() (contracts/LiquidationPool.sol#55-62)
+        - LiquidationPool.holderPendingStakes(address) (contracts/LiquidationPool.sol#73-81)
+        - LiquidationPool.increasePosition(uint256,uint256) (contracts/LiquidationPool.sol#134-142)
+        - positions[_holder].EUROs += _amount * positions[_holder].TST / tstTotal (contracts/LiquidationPool.sol#188)
+        LiquidationPool.positions (contracts/LiquidationPool.sol#21) can be used in cross function reentrancies:
+        - LiquidationPool.consolidatePendingStakes() (contracts/LiquidationPool.sol#119-132)
+        - LiquidationPool.decreasePosition(uint256,uint256) (contracts/LiquidationPool.sol#149-162)
+        - LiquidationPool.deletePosition(LiquidationPool.Position) (contracts/LiquidationPool.sol#144-147)
+        - LiquidationPool.distributeAssets(ILiquidationPoolManager.Asset[],uint256,uint256) (contracts/LiquidationPool.sol#205-241)
+        - LiquidationPool.distributeFees(uint256) (contracts/LiquidationPool.sol#182-194)
+        - LiquidationPool.getStakeTotal() (contracts/LiquidationPool.sol#48-53)
+        - LiquidationPool.getTstTotal() (contracts/LiquidationPool.sol#55-62)
+        - LiquidationPool.position(address) (contracts/LiquidationPool.sol#83-90)
+Reentrancy in LiquidationPool.increasePosition(uint256,uint256) (contracts/LiquidationPool.sol#134-142):
+        External calls:
+        - ILiquidationPoolManager(manager).distributeFees() (contracts/LiquidationPool.sol#137)
+        - IERC20(TST).safeTransferFrom(msg.sender,address(this),_tstVal) (contracts/LiquidationPool.sol#138)
+        - IERC20(EUROs).safeTransferFrom(msg.sender,address(this),_eurosVal) (contracts/LiquidationPool.sol#139)
+        State variables written after the call(s):
+        - pendingStakes.push(PendingStake(msg.sender,block.timestamp,_tstVal,_eurosVal)) (contracts/LiquidationPool.sol#140)
+        LiquidationPool.pendingStakes (contracts/LiquidationPool.sol#23) can be used in cross function reentrancies:
+        - LiquidationPool.consolidatePendingStakes() (contracts/LiquidationPool.sol#119-132)
+        - LiquidationPool.deletePendingStake(uint256) (contracts/LiquidationPool.sol#105-110)
+        - LiquidationPool.distributeFees(uint256) (contracts/LiquidationPool.sol#182-194)
+        - LiquidationPool.getTstTotal() (contracts/LiquidationPool.sol#55-62)
+        - LiquidationPool.holderPendingStakes(address) (contracts/LiquidationPool.sol#73-81)
+        - LiquidationPool.increasePosition(uint256,uint256) (contracts/LiquidationPool.sol#134-142)
+Reentrancy in SmartVaultManagerV5.mint() (contracts/SmartVaultManagerV5.sol#70-79):
+        External calls:
+        - _safeMint(msg.sender,tokenId) (contracts/SmartVaultManagerV5.sol#72)
+                - smartVaultIndex.transferTokenId(_from,_to,_tokenId) (contracts/SmartVaultManagerV5.sol#140)
+                - retval = IERC721ReceiverUpgradeable(to).onERC721Received(_msgSender(),from,tokenId,data) (node_modules/@openzeppelin/contracts-upgradeable/token/ERC721/ERC721Upgradeable.sol#411-422)
+                - ISmartVault(smartVaultIndex.getVaultAddress(_tokenId)).setOwner(_to) (contracts/SmartVaultManagerV5.sol#141)
+        State variables written after the call(s):
+        - lastToken = tokenId (contracts/SmartVaultManagerV5.sol#73)
+        SmartVaultManagerV5.lastToken (contracts/SmartVaultManagerV5.sol#28) can be used in cross function reentrancies:
+        - SmartVaultManagerV5.mint() (contracts/SmartVaultManagerV5.sol#70-79)
+        - SmartVaultManagerV5.totalSupply() (contracts/SmartVaultManagerV5.sol#99-101)
+Reentrancy in SmartVaultManager.mint() (contracts/utils/SmartVaultManager.sol#78-87):
+        External calls:
+        - _safeMint(msg.sender,tokenId) (contracts/utils/SmartVaultManager.sol#80)
+                - smartVaultIndex.transferTokenId(_from,_to,_tokenId) (contracts/utils/SmartVaultManager.sol#125)
+                - retval = IERC721ReceiverUpgradeable(to).onERC721Received(_msgSender(),from,tokenId,data) (node_modules/@openzeppelin/contracts-upgradeable/token/ERC721/ERC721Upgradeable.sol#411-422)
+                - ISmartVault(smartVaultIndex.getVaultAddress(_tokenId)).setOwner(_to) (contracts/utils/SmartVaultManager.sol#126)
+        State variables written after the call(s):
+        - lastToken = tokenId (contracts/utils/SmartVaultManager.sol#81)
+        SmartVaultManager.lastToken (contracts/utils/SmartVaultManager.sol#27) can be used in cross function reentrancies:
+        - SmartVaultManager.liquidateVaults() (contracts/utils/SmartVaultManager.sol#91-104)
+        - SmartVaultManager.mint() (contracts/utils/SmartVaultManager.sol#78-87)
+        - SmartVaultManager.totalSupply() (contracts/utils/SmartVaultManager.sol#111-113)
+Reference: https://github.com/crytic/slither/wiki/Detector-Documentation#reentrancy-vulnerabilities-1
+
+INFO:Detectors:
+MockSmartVaultManager.liquidateVault(uint256).liquidated (contracts/utils/MockSmartVaultManager.sol#24) is a local variable never initialized
+LiquidationPool.distributeAssets(ILiquidationPoolManager.Asset[],uint256,uint256).burnEuros (contracts/LiquidationPool.sol#209) is a local variable never initialized
+LiquidationPoolManager.runLiquidation(uint256).ethBalance (contracts/LiquidationPoolManager.sol#65) is a local variable never initialized
+SmartVaultManager.liquidateVaults().liquidating (contracts/utils/SmartVaultManager.sol#92) is a local variable never initialized
+LiquidationPool.distributeAssets(ILiquidationPoolManager.Asset[],uint256,uint256).nativePurchased (contracts/LiquidationPool.sol#210) is a local variable never initialized
+Reference: https://github.com/crytic/slither/wiki/Detector-Documentation#uninitialized-local-variables
+
+INFO:Detectors:
+LiquidationPool.distributeAssets(ILiquidationPoolManager.Asset[],uint256,uint256) (contracts/LiquidationPool.sol#205-241) ignores return value by (priceEurUsd) = AggregatorV3Interface(eurUsd).latestRoundData() (contracts/LiquidationPool.sol#207)
+LiquidationPool.distributeAssets(ILiquidationPoolManager.Asset[],uint256,uint256) (contracts/LiquidationPool.sol#205-241) ignores return value by (assetPriceUsd) = AggregatorV3Interface(asset.token.clAddr).latestRoundData() (contracts/LiquidationPool.sol#218)
+LiquidationPoolManager.distributeFees() (contracts/LiquidationPoolManager.sol#33-41) ignores return value by eurosToken.approve(pool,_feesForPool) (contracts/LiquidationPoolManager.sol#37)
+LiquidationPoolManager.runLiquidation(uint256) (contracts/LiquidationPoolManager.sol#59-82) ignores return value by ierc20.approve(pool,erc20balance) (contracts/LiquidationPoolManager.sol#76)
+SmartVaultV3.executeNativeSwapAndFee(ISwapRouter.ExactInputSingleParams,uint256) (contracts/SmartVaultV3.sol#190-194) ignores return value by ISwapRouter(ISmartVaultManagerV3(manager).swapRouter2()).exactInputSingle{value: _params.amountIn}(_params) (contracts/SmartVaultV3.sol#193)
+SmartVaultV3.executeERC20SwapAndFee(ISwapRouter.ExactInputSingleParams,uint256) (contracts/SmartVaultV3.sol#196-204) ignores return value by ISwapRouter(ISmartVaultManagerV3(manager).swapRouter2()).exactInputSingle(_params) (contracts/SmartVaultV3.sol#199)
+PriceCalculator.avgPrice(uint8,AggregatorV3Interface) (contracts/utils/PriceCalculator.sol#18-37) ignores return value by (roundId,answer,None,roundTS,None) = _priceFeed.latestRoundData() (contracts/utils/PriceCalculator.sol#23)
+PriceCalculator.avgPrice(uint8,AggregatorV3Interface) (contracts/utils/PriceCalculator.sol#18-37) ignores return value by _priceFeed.getRoundData(roundId) (contracts/utils/PriceCalculator.sol#28-34)
+PriceCalculator.avgPrice(uint8,AggregatorV3Interface) (contracts/utils/PriceCalculator.sol#18-37) ignores return value by (None,answer,None,roundTS,None) = _priceFeed.getRoundData(roundId) (contracts/utils/PriceCalculator.sol#29)
+PriceCalculator.tokenToEurAvg(ITokenManager.Token,uint256) (contracts/utils/PriceCalculator.sol#43-49) ignores return value by (eurUsdPrice) = clEurUsd.latestRoundData() (contracts/utils/PriceCalculator.sol#47)     
+PriceCalculator.tokenToEur(ITokenManager.Token,uint256) (contracts/utils/PriceCalculator.sol#51-58) ignores return value by (_tokenUsdPrice) = tokenUsdClFeed.latestRoundData() (contracts/utils/PriceCalculator.sol#54)
+PriceCalculator.tokenToEur(ITokenManager.Token,uint256) (contracts/utils/PriceCalculator.sol#51-58) ignores return value by (eurUsdPrice) = clEurUsd.latestRoundData() (contracts/utils/PriceCalculator.sol#56)        
+PriceCalculator.eurToToken(ITokenManager.Token,uint256) (contracts/utils/PriceCalculator.sol#60-65) ignores return value by (tokenUsdPrice) = tokenUsdClFeed.latestRoundData() (contracts/utils/PriceCalculator.sol#62)PriceCalculator.eurToToken(ITokenManager.Token,uint256) (contracts/utils/PriceCalculator.sol#60-65) ignores return value by (eurUsdPrice) = clEurUsd.latestRoundData() (contracts/utils/PriceCalculator.sol#63)        
+Reference: https://github.com/crytic/slither/wiki/Detector-Documentation#unused-return
+ 
+
+
+*********************************************************************************
+
+
+INFO:Detectors:
+SmartVaultManagerV5.setLiquidatorAddress(address) (contracts/SmartVaultManagerV5.sol#135-137) should emit an event for:
+        - liquidator = _liquidator (contracts/SmartVaultManagerV5.sol#136)
+SmartVaultV3.setOwner(address) (contracts/SmartVaultV3.sol#233-235) should emit an event for:
+        - owner = _newOwner (contracts/SmartVaultV3.sol#234)
+SmartVaultIndex.setVaultManager(address) (contracts/utils/SmartVaultIndex.sol#43-45) should emit an event for:
+        - manager = _manager (contracts/utils/SmartVaultIndex.sol#44)
+Reference: https://github.com/crytic/slither/wiki/Detector-Documentation#missing-events-access-control
+
+
+
+
+&&&&&
+INFO:Detectors:
+LiquidationPool.constructor(address,address,address,address)._TST (contracts/LiquidationPool.sol#31) lacks a zero-check on :
+                - TST = _TST (contracts/LiquidationPool.sol#32)
+LiquidationPool.constructor(address,address,address,address)._EUROs (contracts/LiquidationPool.sol#31) lacks a zero-check on :
+                - EUROs = _EUROs (contracts/LiquidationPool.sol#33)
+LiquidationPool.constructor(address,address,address,address)._eurUsd (contracts/LiquidationPool.sol#31) lacks a zero-check on :
+                - eurUsd = _eurUsd (contracts/LiquidationPool.sol#34)
+LiquidationPool.constructor(address,address,address,address)._tokenManager (contracts/LiquidationPool.sol#31) lacks a zero-check on :
+                - tokenManager = _tokenManager (contracts/LiquidationPool.sol#35)
+LiquidationPoolManager.constructor(address,address,address,address,address,uint32)._smartVaultManager (contracts/LiquidationPoolManager.sol#22) lacks a zero-check on :
+                - pool = address(new LiquidationPool(_TST,_EUROs,_eurUsd,ISmartVaultManager(_smartVaultManager).tokenManager())) (contracts/LiquidationPoolManager.sol#23)
+                - smartVaultManager = _smartVaultManager (contracts/LiquidationPoolManager.sol#26)
+LiquidationPoolManager.constructor(address,address,address,address,address,uint32)._TST (contracts/LiquidationPoolManager.sol#22) lacks a zero-check on :
+                - pool = address(new LiquidationPool(_TST,_EUROs,_eurUsd,ISmartVaultManager(_smartVaultManager).tokenManager())) (contracts/LiquidationPoolManager.sol#23)
+                - TST = _TST (contracts/LiquidationPoolManager.sol#24)
+LiquidationPoolManager.constructor(address,address,address,address,address,uint32)._EUROs (contracts/LiquidationPoolManager.sol#22) lacks a zero-check on :
+                - pool = address(new LiquidationPool(_TST,_EUROs,_eurUsd,ISmartVaultManager(_smartVaultManager).tokenManager())) (contracts/LiquidationPoolManager.sol#23)
+                - EUROs = _EUROs (contracts/LiquidationPoolManager.sol#25)
+LiquidationPoolManager.constructor(address,address,address,address,address,uint32)._eurUsd (contracts/LiquidationPoolManager.sol#22) lacks a zero-check on :
+                - pool = address(new LiquidationPool(_TST,_EUROs,_eurUsd,ISmartVaultManager(_smartVaultManager).tokenManager())) (contracts/LiquidationPoolManager.sol#23)
+LiquidationPoolManager.constructor(address,address,address,address,address,uint32)._protocol (contracts/LiquidationPoolManager.sol#22) lacks a zero-check on :
+                - protocol = _protocol (contracts/LiquidationPoolManager.sol#27)
+SmartVaultManagerV5.setWethAddress(address)._weth (contracts/SmartVaultManagerV5.sol#115) lacks a zero-check on :
+                - weth = _weth (contracts/SmartVaultManagerV5.sol#116)
+SmartVaultManagerV5.setSwapRouter2(address)._swapRouter (contracts/SmartVaultManagerV5.sol#119) lacks a zero-check on :
+                - swapRouter2 = _swapRouter (contracts/SmartVaultManagerV5.sol#120)
+SmartVaultManagerV5.setNFTMetadataGenerator(address)._nftMetadataGenerator (contracts/SmartVaultManagerV5.sol#123) lacks a zero-check on :
+                - nftMetadataGenerator = _nftMetadataGenerator (contracts/SmartVaultManagerV5.sol#124)
+SmartVaultManagerV5.setSmartVaultDeployer(address)._smartVaultDeployer (contracts/SmartVaultManagerV5.sol#127) lacks a zero-check on :
+                - smartVaultDeployer = _smartVaultDeployer (contracts/SmartVaultManagerV5.sol#128)
+SmartVaultManagerV5.setProtocolAddress(address)._protocol (contracts/SmartVaultManagerV5.sol#131) lacks a zero-check on :
+                - protocol = _protocol (contracts/SmartVaultManagerV5.sol#132)
+SmartVaultManagerV5.setLiquidatorAddress(address)._liquidator (contracts/SmartVaultManagerV5.sol#135) lacks a zero-check on :
+                - liquidator = _liquidator (contracts/SmartVaultManagerV5.sol#136)
+SmartVaultV3.constructor(bytes32,address,address,address,address)._owner (contracts/SmartVaultV3.sol#35) lacks a zero-check on :
+                - owner = _owner (contracts/SmartVaultV3.sol#37)
+SmartVaultV3.constructor(bytes32,address,address,address,address)._manager (contracts/SmartVaultV3.sol#35) lacks a zero-check on :
+                - manager = _manager (contracts/SmartVaultV3.sol#38)
+SmartVaultV3.removeCollateralNative(uint256,address)._to (contracts/SmartVaultV3.sol#135) lacks a zero-check on :
+                - (sent) = _to.call{value: _amount}() (contracts/SmartVaultV3.sol#137)
+SmartVaultV3.setOwner(address)._newOwner (contracts/SmartVaultV3.sol#233) lacks a zero-check on :
+                - owner = _newOwner (contracts/SmartVaultV3.sol#234)
+MockSmartVaultManager.constructor(uint256,address)._tokenManager (contracts/utils/MockSmartVaultManager.sol#16) lacks a zero-check on :
+                - tokenManager = _tokenManager (contracts/utils/MockSmartVaultManager.sol#18)
+SmartVaultDeployerV3.constructor(bytes32,address)._clEurUsd (contracts/utils/SmartVaultDeployerV3.sol#12) lacks a zero-check on :
+                - priceCalculator = address(new PriceCalculator(_native,_clEurUsd)) (contracts/utils/SmartVaultDeployerV3.sol#14)
+SmartVaultIndex.setVaultManager(address)._manager (contracts/utils/SmartVaultIndex.sol#43) lacks a zero-check on :
+                - manager = _manager (contracts/utils/SmartVaultIndex.sol#44)
+SmartVaultManager.initialize(uint256,uint256,address,address,address,address,address,address,address)._euros (contracts/utils/SmartVaultManager.sol#41) lacks a zero-check on :
+                - euros = _euros (contracts/utils/SmartVaultManager.sol#45)
+SmartVaultManager.initialize(uint256,uint256,address,address,address,address,address,address,address)._protocol (contracts/utils/SmartVaultManager.sol#41) lacks a zero-check on :
+                - protocol = _protocol (contracts/utils/SmartVaultManager.sol#48)
+SmartVaultManager.initialize(uint256,uint256,address,address,address,address,address,address,address)._liquidator (contracts/utils/SmartVaultManager.sol#41) lacks a zero-check on :
+                - liquidator = _liquidator (contracts/utils/SmartVaultManager.sol#49)
+SmartVaultManager.initialize(uint256,uint256,address,address,address,address,address,address,address)._tokenManager (contracts/utils/SmartVaultManager.sol#41) lacks a zero-check on :
+                - tokenManager = _tokenManager (contracts/utils/SmartVaultManager.sol#50)
+SmartVaultManager.initialize(uint256,uint256,address,address,address,address,address,address,address)._smartVaultDeployer (contracts/utils/SmartVaultManager.sol#41) lacks a zero-check on :
+                - smartVaultDeployer = _smartVaultDeployer (contracts/utils/SmartVaultManager.sol#51)
+SmartVaultManager.initialize(uint256,uint256,address,address,address,address,address,address,address)._nftMetadataGenerator (contracts/utils/SmartVaultManager.sol#41) lacks a zero-check on :
+                - nftMetadataGenerator = _nftMetadataGenerator (contracts/utils/SmartVaultManager.sol#53)
+Reference: https://github.com/crytic/slither/wiki/Detector-Documentation#missing-zero-address-validation
+
+
+
+&&&&&
+INFO:Detectors:
+Pragma version0.8.17 (contracts/utils/SwapRouterMock.sol#2) allows old versions
+
+solc-0.8.17 is not recommended for deployment
+Reference: https://github.com/crytic/slither/wiki/Detector-Documentation#incorrect-versions-of-solidity
+
